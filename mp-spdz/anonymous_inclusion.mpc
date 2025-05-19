@@ -1,0 +1,245 @@
+# anonymous_inclusion.mpc
+"""
+MP-SPDZ MPC script for an Anonymous Inclusion List.
+
+This version includes a MAX_PRACTICAL_EVALUATION_PREFIX_BITS to cap
+the depth of detailed bucket evaluation, addressing scalability concerns
+for very large max_tx_id_length by limiting the size of loops and arrays
+for prefix processing.
+
+The core logic remains:
+- Iterates through potential buckets up to a capped prefix length.
+- Counts votes for transaction IDs falling into these buckets.
+- Implements pruning: if a bucket's vote count is below a threshold,
+  or its parent was pruned, its effective vote count is zero, and its
+  children will also be treated as pruned.
+- Aims for type consistency using primarily arithmetic 'sint' types.
+"""
+
+import math # Required for math.ceil
+
+# --- Configuration ---
+# These can be modified or later read from program.args if compile.py setup changes
+max_tx_id_length = 3    # Max length of transaction IDs in bits
+branch_factor_log2 = 1  # Number of bits used to define sub-buckets at each new level
+num_tx_per_party = 3    # Number of transaction IDs each party will submit
+VOTING_THRESHOLD = 2    # Minimum votes a bucket needs for its sub-branches to be active
+
+# NEW: Practical limit for prefix bits to evaluate in detail, to manage scalability.
+# Even if max_tx_id_length is very large, we won't iterate/allocate for prefixes longer than this.
+# Set this to a value where 2^MAX_PRACTICAL_EVALUATION_PREFIX_BITS is manageable
+# (e.g., 16-20 is often a practical limit for full iteration/allocation).
+MAX_PRACTICAL_EVALUATION_PREFIX_BITS = 16 # Example: won't evaluate prefixes > 16 bits in full detail.
+
+# --- Derived Configuration ---
+DEFAULT_COMPILE_NUM_PARTIES = 2 # Default if not passed as compile.py argument
+
+# Try to get num_parties from the arguments passed to compile.py
+if len(program.args) > 1:
+    try:
+        num_parties_from_arg = int(program.args[1])
+        if num_parties_from_arg > 0:
+            num_parties = num_parties_from_arg
+            # Use Python print for compile-time debug, print_ln for MPC runtime
+            print(f"[MPC SCRIPT COMPILE INFO] Using num_parties = {num_parties} (from compile.py arg)")
+        else:
+            print(f"[MPC SCRIPT COMPILE WARNING] Invalid num_parties '{program.args[1]}'. Defaulting to {DEFAULT_COMPILE_NUM_PARTIES}.")
+            num_parties = DEFAULT_COMPILE_NUM_PARTIES
+    except ValueError:
+        print(f"[MPC SCRIPT COMPILE WARNING] Non-integer num_parties '{program.args[1]}'. Defaulting to {DEFAULT_COMPILE_NUM_PARTIES}.")
+        num_parties = DEFAULT_COMPILE_NUM_PARTIES
+else:
+    print(f"[MPC SCRIPT COMPILE INFO] num_parties not provided as compile.py arg. Defaulting to {DEFAULT_COMPILE_NUM_PARTIES}.")
+    num_parties = DEFAULT_COMPILE_NUM_PARTIES
+
+# Calculate tree_depth based on max_tx_id_length (overall conceptual depth)
+if max_tx_id_length == 0:
+    tree_depth_conceptual = 1
+elif branch_factor_log2 <= 0:
+    print_ln("Error: branch_factor_log2 must be a positive integer. Using default conceptual depth 1.")
+    tree_depth_conceptual = 1
+else:
+    branching_steps = math.ceil(max_tx_id_length / branch_factor_log2)
+    tree_depth_conceptual = int(branching_steps + 1)
+
+print_ln("--- Script Configuration ---")
+print_ln("Number of Parties for Compilation: %s", num_parties)
+print_ln("Max TX ID Length (Conceptual): %s bits", max_tx_id_length)
+print_ln("Branch Factor (log2 bits per level step): %s", branch_factor_log2)
+print_ln("Number of TXs per Party: %s", num_tx_per_party)
+print_ln("Voting Threshold for Pruning: %s", VOTING_THRESHOLD)
+print_ln("Conceptual Tree Depth: %s (levels 0 to %s)", tree_depth_conceptual, tree_depth_conceptual - 1)
+print_ln("Max Practical Prefix Bits for Detailed Evaluation: %s", MAX_PRACTICAL_EVALUATION_PREFIX_BITS)
+print_ln("----------------------------")
+
+# --- SCALABILITY NOTE ---
+# The script will iterate through all possible buckets UP TO MAX_PRACTICAL_EVALUATION_PREFIX_BITS.
+# If max_tx_id_length implies deeper levels, those deeper levels won't have their buckets
+# individually enumerated and processed if their prefix length exceeds this practical cap.
+# Pruning still applies within the evaluated depth.
+# This avoids allocating impractically large 'pruned_flags' arrays or iterating too many times.
+
+# --- Input Phase (User-Friendly: Decimal Integers per Transaction ID) ---
+all_tx_ids_sint_arrays = [] # Stores sint.Array objects, each bit is sint(0/1)
+
+print_ln("--- Input Phase Starting (User-Friendly Decimal Input) ---")
+print_ln("Parties input TX IDs as DECIMAL INTEGERS (0 to 2^max_tx_id_length - 1).")
+
+for i in range(num_parties):
+    party_tx_sint_arrays_for_party_i = []
+    for k_tx in range(num_tx_per_party):
+        tx_as_sint_input = sint.get_input_from(i)
+        sint_bits_lsb_first = tx_as_sint_input.bit_decompose(max_tx_id_length)
+        current_length = len(sint_bits_lsb_first)
+        if current_length < max_tx_id_length:
+             sint_bits_lsb_first.extend([sint(0)] * (max_tx_id_length - current_length))
+        elif current_length > max_tx_id_length:
+            sint_bits_lsb_first = sint_bits_lsb_first[:max_tx_id_length]
+        sint_bits_msb_first = sint_bits_lsb_first[::-1]
+        current_tx_sint_array = sint.Array(max_tx_id_length)
+        for bit_idx in range(max_tx_id_length):
+            if bit_idx < len(sint_bits_msb_first):
+                current_tx_sint_array[bit_idx] = sint_bits_msb_first[bit_idx]
+            else:
+                current_tx_sint_array[bit_idx] = sint(0)
+        party_tx_sint_arrays_for_party_i.append(current_tx_sint_array)
+    all_tx_ids_sint_arrays.extend(party_tx_sint_arrays_for_party_i)
+
+total_tx_voted_on = len(all_tx_ids_sint_arrays)
+print_ln("Total transaction IDs (votes) received from all parties: %s", total_tx_voted_on)
+print_ln("--- Input Phase Complete ---")
+
+
+# --- Processing Tree Levels and Buckets (with Pruning Logic) ---
+print_ln("--- Processing Phase Starting ---")
+
+root_total_votes_sint_container = sint.Array(1)
+root_total_votes_sint_container[0] = sint(0)
+
+# Pruning flags: list of sint.Array, storing sint(0) (not pruned) or sint(1) (pruned).
+# The effective depth for allocating these flags is limited by MAX_PRACTICAL_EVALUATION_PREFIX_BITS.
+effective_flag_tree_depth = tree_depth_conceptual
+if branch_factor_log2 > 0: # Avoid division by zero if branch_factor_log2 is invalid
+    max_levels_for_practical_prefix = (MAX_PRACTICAL_EVALUATION_PREFIX_BITS // branch_factor_log2) + 1
+    effective_flag_tree_depth = min(tree_depth_conceptual, max_levels_for_practical_prefix)
+elif MAX_PRACTICAL_EVALUATION_PREFIX_BITS == 0 and tree_depth_conceptual > 0 : # Only root if practical prefix is 0
+    effective_flag_tree_depth = 1
+
+
+pruned_flags = [None] * effective_flag_tree_depth # Allocate based on effective depth
+for l_idx in range(effective_flag_tree_depth):
+    current_level_prefix_length = l_idx * branch_factor_log2
+    # This check is now against MAX_PRACTICAL_EVALUATION_PREFIX_BITS for allocation
+    if current_level_prefix_length <= MAX_PRACTICAL_EVALUATION_PREFIX_BITS and \
+       current_level_prefix_length <= max_tx_id_length: # And still within actual TX ID length
+        num_buckets_at_l_idx = 2**current_level_prefix_length
+        pruned_flags[l_idx] = sint.Array(num_buckets_at_l_idx)
+        pruned_flags[l_idx].assign_all(sint(0)) # Not pruned = sint(0)
+    # else: pruned_flags[l_idx] will remain None if prefix too long for practical eval
+
+threshold_sint = sint(VOTING_THRESHOLD)
+
+# Iterate conceptually through all levels, but detailed processing is capped.
+for level in range(tree_depth_conceptual):
+    prefix_length_in_bits = level * branch_factor_log2
+
+    if prefix_length_in_bits > max_tx_id_length:
+        print_ln("Level %s: Prefix length (%s) exceeds max_tx_id_length (%s). Stopping descent.",
+                 level, prefix_length_in_bits, max_tx_id_length)
+        break # Stop processing deeper levels
+
+    # Check if this level exceeds the practical evaluation limit for detailed bucket processing
+    if prefix_length_in_bits > MAX_PRACTICAL_EVALUATION_PREFIX_BITS:
+        print_ln("Level %s: Prefix length (%s) exceeds MAX_PRACTICAL_EVALUATION_PREFIX_BITS (%s). Detailed bucket evaluation stops here.",
+                 level, prefix_length_in_bits, MAX_PRACTICAL_EVALUATION_PREFIX_BITS)
+        # At this point, we might want to sum up all votes for transactions whose prefixes
+        # matched a *passing parent* from the last evaluatable level, without further splitting.
+        # For simplicity in this version, we just stop detailed evaluation.
+        # The 'final_inclusion_prefixes' would be those from the last fully evaluated level.
+        break
+
+    num_buckets_at_this_level = 2**prefix_length_in_bits
+    print_ln('--- Level %s (Prefix Length: %s bits, Buckets: %s) ---',
+             level, prefix_length_in_bits, num_buckets_at_this_level)
+    current_level_total_sum_votes = sint(0)
+
+    # Check if pruned_flags array was allocated for this level
+    if level >= effective_flag_tree_depth or pruned_flags[level] is None:
+        print_ln("Notice: Skipping detailed bucket processing for level %s as it's beyond practical evaluation depth for flags.", level)
+        # If we are here, it means prefix_length_in_bits <= MAX_PRACTICAL_EVALUATION_PREFIX_BITS
+        # but effective_flag_tree_depth calculation was more restrictive.
+        # This case should ideally be harmonized by the effective_flag_tree_depth logic.
+        # For safety, if flags aren't there, we can't really do the pruning propagation.
+        # A more robust solution might evaluate the root of this "too deep" subtree.
+        # For now, we'll just break, implying results from previous level are final.
+        break
+
+
+    for bucket_idx in range(num_buckets_at_this_level):
+        current_clear_prefix_bits = []
+        if prefix_length_in_bits > 0:
+            binary_representation = bin(bucket_idx)[2:].zfill(prefix_length_in_bits)
+            current_clear_prefix_bits = [int(b) for b in binary_representation]
+
+        parent_is_pruned_sint = sint(0)
+        if level > 0:
+            parent_level_idx = level - 1
+            parent_bucket_idx = bucket_idx >> branch_factor_log2
+            # Parent must be within the levels for which flags were allocated
+            if parent_level_idx < effective_flag_tree_depth and \
+               pruned_flags[parent_level_idx] is not None and \
+               parent_bucket_idx < len(pruned_flags[parent_level_idx]):
+                parent_is_pruned_sint = pruned_flags[parent_level_idx][parent_bucket_idx]
+            # If parent was in a level too deep for flags, assume it wasn't pruned for this logic,
+            # or handle as an error/special case. For now, defaults to sint(0).
+
+        temp_actual_bucket_vote_count = sint(0)
+        for tx_sint_array_item in all_tx_ids_sint_arrays:
+            is_match_sint = sint(1)
+            if prefix_length_in_bits > 0:
+                if max_tx_id_length >= prefix_length_in_bits:
+                    current_tx_match_flag_sint = sint(1)
+                    for k_bit in range(prefix_length_in_bits):
+                        tx_bit_sint = tx_sint_array_item[k_bit]
+                        prefix_clear_bit = current_clear_prefix_bits[k_bit]
+                        matches_at_k_sbit = (tx_bit_sint == prefix_clear_bit)
+                        matches_at_k_sint = sint.if_else(matches_at_k_sbit, sint(1), sint(0))
+                        current_tx_match_flag_sint = current_tx_match_flag_sint * matches_at_k_sint
+                    is_match_sint = current_tx_match_flag_sint
+                else:
+                    is_match_sint = sint(0)
+            temp_actual_bucket_vote_count += is_match_sint
+
+        current_bucket_vote_count = sint.if_else(parent_is_pruned_sint, sint(0), temp_actual_bucket_vote_count)
+
+        current_count_is_insufficient_sbit = (current_bucket_vote_count < threshold_sint)
+        current_count_is_insufficient_sint = sint.if_else(current_count_is_insufficient_sbit, sint(1), sint(0))
+        
+        pruning_sum = parent_is_pruned_sint + current_count_is_insufficient_sint
+        is_definitely_pruned_sbit = (pruning_sum > 0)
+        final_pruned_state_sint = sint.if_else(is_definitely_pruned_sbit, sint(1), sint(0))
+        
+        if bucket_idx < len(pruned_flags[level]): # Check bounds for safety
+            pruned_flags[level][bucket_idx] = final_pruned_state_sint
+
+        prefix_str_for_print = "".join(map(str, current_clear_prefix_bits)) if prefix_length_in_bits > 0 else "ROOT"
+        revealed_count = current_bucket_vote_count.reveal()
+        revealed_pruned_status_for_children = final_pruned_state_sint.reveal()
+
+        print_ln('  Bucket (Prefix: %s): Votes = %s (Children will be pruned: %s)',
+                 prefix_str_for_print, revealed_count, revealed_pruned_status_for_children)
+        current_level_total_sum_votes += current_bucket_vote_count
+
+    if level == 0:
+        root_total_votes_sint_container[0] = current_bucket_vote_count
+        print_ln('Level 0 (Root) total votes (for verification consistency): %s', revealed_count) # revealed_count is from the single root bucket
+    else:
+        root_sum_check = (current_level_total_sum_votes == root_total_votes_sint_container[0])
+        print_ln('Verification: Level %s sum of effective bucket votes (%s) == Root total votes (%s) -> %s',
+                 level,
+                 current_level_total_sum_votes.reveal(),
+                 root_total_votes_sint_container[0].reveal(),
+                 root_sum_check.reveal())
+
+print_ln("--- Processing Phase Complete ---")
+print_ln("--- Anonymous Inclusion List Processing Finished ---")
