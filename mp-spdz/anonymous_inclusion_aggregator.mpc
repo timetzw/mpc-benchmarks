@@ -1,0 +1,193 @@
+# anonymous_inclusion_aggregator.mpc
+import json
+import math
+import io
+import os # Import os to access environment variables
+
+# --- Configuration (Read from Environment Variables or use Defaults) ---
+# These values are used at COMPILE TIME by the Python code in this script.
+
+# NUM_PARTIES (from ENV NUM_PARTIES)
+DEFAULT_NUM_PARTIES = 2 # Fallback if environment variable is not set or invalid
+try:
+    NUM_PARTIES = int(os.environ.get('NUM_PARTIES', str(DEFAULT_NUM_PARTIES)))
+    if NUM_PARTIES <= 0:
+        print(f"[MPC COMPILE WARNING] NUM_PARTIES from env ('{os.environ.get('NUM_PARTIES')}') is not positive. Using default {DEFAULT_NUM_PARTIES}.")
+        NUM_PARTIES = DEFAULT_NUM_PARTIES
+except ValueError:
+    print(f"[MPC COMPILE WARNING] NUM_PARTIES from env ('{os.environ.get('NUM_PARTIES')}') is not an int. Using default {DEFAULT_NUM_PARTIES}.")
+    NUM_PARTIES = DEFAULT_NUM_PARTIES
+
+# TRANSACTION_SPACE_BITS (from ENV TRANSACTION_SPACE_BITS)
+DEFAULT_TRANSACTION_SPACE_BITS = 5
+try:
+    TRANSACTION_SPACE_BITS = int(os.environ.get('TRANSACTION_SPACE_BITS', str(DEFAULT_TRANSACTION_SPACE_BITS)))
+    if TRANSACTION_SPACE_BITS < 0:
+        print(f"[MPC COMPILE WARNING] TRANSACTION_SPACE_BITS from env ('{os.environ.get('TRANSACTION_SPACE_BITS')}') is negative, using default {DEFAULT_TRANSACTION_SPACE_BITS}.")
+        TRANSACTION_SPACE_BITS = DEFAULT_TRANSACTION_SPACE_BITS
+except ValueError:
+    print(f"[MPC COMPILE WARNING] TRANSACTION_SPACE_BITS from env ('{os.environ.get('TRANSACTION_SPACE_BITS')}') is not an int, using default {DEFAULT_TRANSACTION_SPACE_BITS}.")
+    TRANSACTION_SPACE_BITS = DEFAULT_TRANSACTION_SPACE_BITS
+
+# BRANCH_FACTOR_LOG2 (from ENV BRANCH_FACTOR_LOG2)
+DEFAULT_BRANCH_FACTOR_LOG2 = 1
+try:
+    BRANCH_FACTOR_LOG2 = int(os.environ.get('BRANCH_FACTOR_LOG2', str(DEFAULT_BRANCH_FACTOR_LOG2)))
+    if BRANCH_FACTOR_LOG2 <= 0:
+        print(f"[MPC COMPILE WARNING] BRANCH_FACTOR_LOG2 from env ('{os.environ.get('BRANCH_FACTOR_LOG2')}') is not positive, using default {DEFAULT_BRANCH_FACTOR_LOG2}.")
+        BRANCH_FACTOR_LOG2 = DEFAULT_BRANCH_FACTOR_LOG2
+except ValueError:
+    print(f"[MPC COMPILE WARNING] BRANCH_FACTOR_LOG2 from env ('{os.environ.get('BRANCH_FACTOR_LOG2')}') is not an int, using default {DEFAULT_BRANCH_FACTOR_LOG2}.")
+    BRANCH_FACTOR_LOG2 = DEFAULT_BRANCH_FACTOR_LOG2
+
+# MIN_VOTES_THRESHOLD (from ENV MIN_VOTES_THRESHOLD)
+DEFAULT_MIN_VOTES_THRESHOLD = 2
+try:
+    MIN_VOTES_THRESHOLD = int(os.environ.get('MIN_VOTES_THRESHOLD', str(DEFAULT_MIN_VOTES_THRESHOLD)))
+    if MIN_VOTES_THRESHOLD < 0: 
+        print(f"[MPC COMPILE WARNING] MIN_VOTES_THRESHOLD from env ('{os.environ.get('MIN_VOTES_THRESHOLD')}') is negative, using default {DEFAULT_MIN_VOTES_THRESHOLD}.")
+        MIN_VOTES_THRESHOLD = DEFAULT_MIN_VOTES_THRESHOLD
+except ValueError:
+    print(f"[MPC COMPILE WARNING] MIN_VOTES_THRESHOLD from env ('{os.environ.get('MIN_VOTES_THRESHOLD')}') is not an int, using default {DEFAULT_MIN_VOTES_THRESHOLD}.")
+    MIN_VOTES_THRESHOLD = DEFAULT_MIN_VOTES_THRESHOLD
+
+MEMPOOL_FILE = "Player-Data/mempool_definition.json" # Path is usually fixed
+
+# Print resolved configurations used at compile time
+print(f"[MPC COMPILE CONFIG] NUM_PARTIES: {NUM_PARTIES}")
+print(f"[MPC COMPILE CONFIG] TRANSACTION_SPACE_BITS: {TRANSACTION_SPACE_BITS}")
+print(f"[MPC COMPILE CONFIG] BRANCH_FACTOR_LOG2: {BRANCH_FACTOR_LOG2}")
+print(f"[MPC COMPILE CONFIG] MIN_VOTES_THRESHOLD: {MIN_VOTES_THRESHOLD}")
+print(f"[MPC COMPILE CONFIG] MEMPOOL_FILE: {MEMPOOL_FILE}")
+
+
+# --- Compile-time Python Code (Executed by compile.py) ---
+
+def mpc_load_mempool_tx_strings_compile_time(filepath=MEMPOOL_FILE):
+    """Loads mempool (list of binary strings) at compile time."""
+    try:
+        with io.open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, list) or not all(isinstance(tx, str) for tx in data):
+            print(f"[MPC COMPILE WARNING] Mempool file {filepath} is not a list of strings. Canonical keys might be affected.")
+            return []
+        return data
+    except FileNotFoundError:
+        print(f"[MPC COMPILE WARNING] Mempool file {filepath} not found. Canonical keys might be affected.")
+        return []
+    except json.JSONDecodeError:
+        print(f"[MPC COMPILE WARNING] Could not decode JSON from {filepath}. Canonical keys might be affected.")
+        return []
+    except Exception as e:
+        print(f"[MPC COMPILE WARNING] Error loading mempool at compile time: {e}")
+        return []
+
+def mpc_generate_canonical_prefix_keys(mempool_tx_strings, transaction_space_bits_param, branch_factor_log2_param):
+    """
+    Generates the canonical, ordered list of prefix keys AT COMPILE TIME.
+    This function MUST be identical to the one in generate_local_tree.py.
+    """
+    all_mempool_prefixes_by_len = {}
+    if mempool_tx_strings and transaction_space_bits_param > 0:
+        for l_len in range(1, transaction_space_bits_param + 1):
+            current_len_prefixes = set()
+            for tx_bin_str in mempool_tx_strings:
+                if len(tx_bin_str) >= l_len:
+                    current_len_prefixes.add(tx_bin_str[:l_len])
+            if current_len_prefixes:
+                all_mempool_prefixes_by_len[l_len] = current_len_prefixes
+    
+    canonical_keys = [{'level': 0, 'prefix_len': 0, 'prefix_str': ""}] # Root
+    if transaction_space_bits_param == 0: return canonical_keys
+    if branch_factor_log2_param <= 0: return canonical_keys
+
+    max_level_num = math.ceil(transaction_space_bits_param / branch_factor_log2_param)
+    for level_num_val in range(1, int(max_level_num) + 1):
+        prefix_len_val = level_num_val * branch_factor_log2_param
+        if prefix_len_val > transaction_space_bits_param: prefix_len_val = transaction_space_bits_param
+        
+        prefixes_at_this_len_set = all_mempool_prefixes_by_len.get(prefix_len_val, set())
+        for p_str in sorted(list(prefixes_at_this_len_set)):
+            canonical_keys.append({
+                'level': level_num_val,
+                'prefix_len': prefix_len_val,
+                'prefix_str': p_str
+            })
+        if prefix_len_val == transaction_space_bits_param: break
+    return canonical_keys
+
+
+# Generate canonical keys at compile time using the configured variables
+compile_time_mempool_tx_strings = mpc_load_mempool_tx_strings_compile_time()
+canonical_prefix_keys = mpc_generate_canonical_prefix_keys(
+    compile_time_mempool_tx_strings,
+    TRANSACTION_SPACE_BITS, 
+    BRANCH_FACTOR_LOG2
+)
+num_prefix_slots = len(canonical_prefix_keys)
+
+if num_prefix_slots == 0 or \
+   (num_prefix_slots == 1 and canonical_prefix_keys[0]['prefix_str'] == "" and TRANSACTION_SPACE_BITS > 0 and not compile_time_mempool_tx_strings):
+    print("[MPC COMPILE WARNING] No actual mempool prefixes found beyond root. num_prefix_slots might be 1 (only root).")
+    if num_prefix_slots == 0:
+        print("[MPC COMPILE ERROR] num_prefix_slots is 0. This indicates an issue. Forcing root.")
+        canonical_prefix_keys = [{'level': 0, 'prefix_len': 0, 'prefix_str': ""}]
+        num_prefix_slots = 1
+
+print(f"[MPC COMPILE INFO] Canonical structure: {num_prefix_slots} prefix slots defined.")
+print(f"[MPC COMPILE INFO] Sample canonical keys (first 3): {canonical_prefix_keys[:min(3, num_prefix_slots)]}")
+if num_prefix_slots > 3:
+    print(f"[MPC COMPILE INFO] Sample canonical keys (last 3): {canonical_prefix_keys[max(0, num_prefix_slots-3):]}")
+
+
+# --- MPC Runtime Logic ---
+print_ln("--- MPC Anonymous Inclusion Aggregation Starting ---")
+print_ln("Number of parties: %s", NUM_PARTIES) # Use the NUM_PARTIES read from ENV
+print_ln("Number of prefix slots being processed: %s", num_prefix_slots)
+print_ln("Voting threshold: %s", MIN_VOTES_THRESHOLD) # Use MIN_VOTES_THRESHOLD
+
+sint_global_counts = sint.Array(num_prefix_slots)
+sint_global_counts.assign_all(sint(0))
+
+print_ln("Reading local counts from parties...")
+for k_slot_idx in range(num_prefix_slots):
+    for p_party_idx in range(NUM_PARTIES): # Use NUM_PARTIES from ENV
+        sint_party_k_slot_count = sint.get_input_from(p_party_idx)
+        sint_global_counts[k_slot_idx] += sint_party_k_slot_count
+
+print_ln("All local counts received and aggregated.")
+
+# Perform thresholding
+sint_voting_threshold_mpc = sint(MIN_VOTES_THRESHOLD) # Use MIN_VOTES_THRESHOLD
+sint_meets_threshold_flags = sint.Array(num_prefix_slots)
+
+for k_slot_idx in range(num_prefix_slots):
+    sbit_lt = sint_global_counts[k_slot_idx].less_than(sint_voting_threshold_mpc)
+    sint_meets_threshold_flags[k_slot_idx] = sint.if_else(sbit_lt, sint(0), sint(1))
+
+# Output results
+print_ln("--- Global Aggregated Results ---")
+if num_prefix_slots > 0:
+    for k_slot_idx in range(num_prefix_slots):
+        key_info = canonical_prefix_keys[k_slot_idx]
+        level_val = key_info['level']
+        prefix_len_val = key_info['prefix_len']
+        prefix_str_display = key_info['prefix_str'] if key_info['prefix_str'] else "ROOT"
+
+        revealed_g_count = sint_global_counts[k_slot_idx].reveal()
+        revealed_g_meets_thresh = sint_meets_threshold_flags[k_slot_idx].reveal()
+
+        print_ln("L%s P_len:%s Prefix: %s | Global Votes: %s, Meets Threshold: %s",
+                 level_val, prefix_len_val, prefix_str_display,
+                 revealed_g_count, revealed_g_meets_thresh)
+        
+        if prefix_len_val == TRANSACTION_SPACE_BITS and key_info['prefix_str'] != "":
+            print_ln("FINAL_INCLUSION_CANDIDATE: TX_ID=%s MeetsThresholdStatus=%s",
+                      key_info['prefix_str'], 
+                      revealed_g_meets_thresh)
+else:
+    print_ln("No prefix slots were defined for processing in MPC (check mempool and config).")
+
+print_ln("--- MPC Aggregation Complete ---")
+print_ln("To get the final inclusion list, parse 'FINAL_INCLUSION_CANDIDATE' lines from the output.")
+print_ln("A FINAL_INCLUSION_CANDIDATE with 'MeetsThresholdStatus: 1' is considered included.")
