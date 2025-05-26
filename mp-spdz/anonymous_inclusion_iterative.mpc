@@ -1,0 +1,145 @@
+# anonymous_inclusion_iterative.mpc
+import json
+import math
+import io
+import os # For os.environ.get
+
+# --- Configuration ---
+# Values read by Python code executed by compile.py at COMPILE TIME.
+
+def get_env_int(var_name, default_val_str, is_critical_for_sizing=False, must_be_positive=False, can_be_zero=False):
+    val_str = os.environ.get(var_name, default_val_str)
+    default_val = int(default_val_str)
+    try:
+        val_int = int(val_str)
+        if must_be_positive and val_int <= 0:
+            print(f"[MPC COMPILE WARNING] ENV VAR {var_name} ('{val_str}') must be positive. Using default {default_val_str}.")
+            return default_val
+        if not can_be_zero and val_int < 0 and not must_be_positive : # if must_be_positive, already handled
+             if val_int < 0 : # General check for negative if not specifically allowed to be zero or must be positive
+                print(f"[MPC COMPILE WARNING] ENV VAR {var_name} ('{val_str}') is negative. Using default {default_val_str}.")
+                return default_val
+        return val_int
+    except ValueError:
+        print(f"[MPC COMPILE WARNING] ENV VAR {var_name} ('{val_str}') is not an int. Using default {default_val_str}.")
+        return default_val
+
+# 1. NUM_PARTIES from command-line argument passed to compile.py
+# This is primarily for compile.py to correctly name the .sch file if it uses this argument.
+# The script will use this as its definitive NUM_PARTIES.
+DEFAULT_NUM_PARTIES_ARG = '2' # String default for get_env_int consistency if we were to switch
+NUM_PARTIES = DEFAULT_NUM_PARTIES_ARG # Initialize with a string default that int() can handle
+if len(program.args) > 0:
+    try:
+        val_from_arg = int(program.args[0])
+        if val_from_arg <= 0:
+            print(f"[MPC COMPILE WARNING] NUM_PARTIES from command line arg ('{program.args[0]}') is not positive. Using default {DEFAULT_NUM_PARTIES_ARG}.")
+            NUM_PARTIES = int(DEFAULT_NUM_PARTIES_ARG)
+        else:
+            NUM_PARTIES = val_from_arg
+    except ValueError:
+        print(f"[MPC COMPILE WARNING] NUM_PARTIES from command line arg ('{program.args[0]}') is not an int. Using default {DEFAULT_NUM_PARTIES_ARG}.")
+        NUM_PARTIES = int(DEFAULT_NUM_PARTIES_ARG)
+else:
+    print(f"[MPC COMPILE WARNING] NUM_PARTIES not passed as command line arg to compile.py. Using default {DEFAULT_NUM_PARTIES_ARG}.")
+    NUM_PARTIES = int(DEFAULT_NUM_PARTIES_ARG)
+
+
+# 2. Other parameters from Environment Variables
+NUM_PARTIES = get_env_int('NUM_PARTIES', '2', must_be_positive=True) # Read NUM_PARTIES from ENV
+TRANSACTION_SPACE_BITS = get_env_int('TRANSACTION_SPACE_BITS', '3', can_be_zero=True) # TSB=0 is a valid case (1 "empty" TX)
+BRANCH_FACTOR_LOG2 = get_env_int('BRANCH_FACTOR_LOG2', '1', must_be_positive=True)
+MIN_VOTES_THRESHOLD = get_env_int('MIN_VOTES_THRESHOLD', '2', can_be_zero=True) # Threshold can be 0 or 1
+MEMPOOL_SIZE_FOR_SLOTS_CALC = get_env_int('MEMPOOL_SIZE', '6', is_critical_for_sizing=True, can_be_zero=True)
+
+
+# 3. Calculate MAX_PREFIX_SLOTS based on MEMPOOL_SIZE_FOR_SLOTS_CALC and BRANCH_FACTOR_LOG2
+# This calculation must mirror the orchestrator's logic for determining capacity.
+effective_bf_for_calc = BRANCH_FACTOR_LOG2
+if MEMPOOL_SIZE_FOR_SLOTS_CALC == 0 and TRANSACTION_SPACE_BITS == 0: # Only root prefix ""
+    MAX_PREFIX_SLOTS = 1
+elif MEMPOOL_SIZE_FOR_SLOTS_CALC == 0 and TRANSACTION_SPACE_BITS > 0: # No mempool items to derive prefixes from beyond root
+    MAX_PREFIX_SLOTS = 1 # Only root will be processed by orchestrator initially
+else: # MEMPOOL_SIZE_FOR_SLOTS_CALC > 0
+    MAX_PREFIX_SLOTS = max(1, MEMPOOL_SIZE_FOR_SLOTS_CALC * (2**effective_bf_for_calc))
+
+print(f"[MPC COMPILE CONFIG] NUM_PARTIES (from compile.py arg): {NUM_PARTIES}")
+print(f"[MPC COMPILE CONFIG] TRANSACTION_SPACE_BITS (from ENV): {TRANSACTION_SPACE_BITS}")
+print(f"[MPC COMPILE CONFIG] BRANCH_FACTOR_LOG2 (from ENV, for orchestrator context & slot calc): {BRANCH_FACTOR_LOG2}")
+print(f"[MPC COMPILE CONFIG] MIN_VOTES_THRESHOLD (from ENV): {MIN_VOTES_THRESHOLD}")
+print(f"[MPC COMPILE CONFIG] MEMPOOL_SIZE (from ENV, basis for slots): {MEMPOOL_SIZE_FOR_SLOTS_CALC}")
+print(f"[MPC COMPILE CONFIG] MAX_PREFIX_SLOTS (calculated for MPC arrays): {MAX_PREFIX_SLOTS}")
+
+# --- MPC Runtime Logic ---
+print_ln("--- MPC Anonymous Inclusion Iteration Starting ---")
+print_ln("Compiled for NUM_PARTIES: %s", NUM_PARTIES)
+print_ln("Compiled with MAX_PREFIX_SLOTS: %s", MAX_PREFIX_SLOTS)
+print_ln("Using VOTING_THRESHOLD: %s", MIN_VOTES_THRESHOLD)
+
+# --- Public Inputs for this Iteration (Party 0 provides, others provide dummies) ---
+# These tell the MPC how many of the MAX_PREFIX_SLOTS are actually active in this round,
+# and what the current processing level is (for logging).
+sint_num_active_slots_this_round = sint.get_input_from(0)
+sint_current_processing_level = sint.get_input_from(0)
+
+# Other parties read dummy values for these two public inputs to keep input tape aligned
+for p_idx_dummy in range(1, NUM_PARTIES):
+    _ = sint.get_input_from(p_idx_dummy) # Dummy for num_active_slots
+    _ = sint.get_input_from(p_idx_dummy) # Dummy for current_processing_level
+
+# Reveal public inputs (Party 0's values are effectively broadcast)
+cint_num_active_slots = sint_num_active_slots_this_round.reveal()
+cint_current_level = sint_current_processing_level.reveal()
+
+print_ln("ITERATION_INFO: Current Level = %s, Active Prefix Slots for this level = %s (out of %s max capacity)",
+         cint_current_level, cint_num_active_slots, MAX_PREFIX_SLOTS)
+
+# --- Read Private Inputs (Local Counts) from all parties ---
+# Each party's input file (Player-Data/Input-P<id>-0) contains MAX_PREFIX_SLOTS counts.
+# The first `cint_num_active_slots` are meaningful for this iteration.
+sint_global_counts = sint.Array(MAX_PREFIX_SLOTS)
+sint_global_counts.assign_all(sint(0))
+
+print_ln("Reading local counts from parties for %s total slots...", MAX_PREFIX_SLOTS)
+# The k-th input from party p is their local count for the k-th candidate prefix of this iteration
+# (padded with zeros up to MAX_PREFIX_SLOTS by prepare_iteration_inputs.py)
+for k_slot_idx in range(MAX_PREFIX_SLOTS): # Loop through all possible slots
+    for p_party_idx in range(NUM_PARTIES):
+        sint_party_k_slot_count = sint.get_input_from(p_party_idx)
+        sint_global_counts[k_slot_idx] += sint_party_k_slot_count
+print_ln("Local counts aggregated.")
+
+# --- Perform Thresholding ---
+sint_voting_threshold_mpc = sint(MIN_VOTES_THRESHOLD)
+sint_meets_threshold_flags = sint.Array(MAX_PREFIX_SLOTS)
+sint_meets_threshold_flags.assign_all(sint(0)) # Default to not meeting
+
+# Loop up to MAX_PREFIX_SLOTS, but only effectively compute for active slots
+# The condition `is_active_slot` ensures that for slots beyond `cint_num_active_slots`,
+# the `sint_meets_threshold_flags` remains 0.
+@for_range(MAX_PREFIX_SLOTS)
+def _(k_slot_idx_py): # k_slot_idx_py is a Python int for the loop iteration
+    is_active_slot = (k_slot_idx_py < cint_num_active_slots) 
+    
+    current_sint_global_count = sint_global_counts[k_slot_idx_py]
+    sbit_lt = current_sint_global_count.less_than(sint_voting_threshold_mpc)
+    sint_would_meet_threshold_if_active = sint.if_else(sbit_lt, sint(0), sint(1))
+    
+    sint_meets_threshold_flags[k_slot_idx_py] = sint.if_else(is_active_slot, sint_would_meet_threshold_if_active, sint(0))
+print_ln("Thresholding computation complete (effective for active slots).")
+
+# --- Output Results (Reveal for ALL MAX_PREFIX_SLOTS) ---
+# The orchestrator will use cint_num_active_slots to filter and interpret relevant results.
+print_ln("--- Iteration Results (Revealing all %s slots) ---", MAX_PREFIX_SLOTS)
+
+@for_range(MAX_PREFIX_SLOTS) 
+def _(k_slot_idx_py):
+    # The orchestrator will map k_slot_idx_py back to the actual prefix string for this iteration
+    # and will only care about the first cint_num_active_slots revealed values.
+    print_ln("RAW_ITERATION_RESULT: Level=%s SlotIndex=%s GlobalVotes=%s MeetsThreshold=%s",
+             cint_current_level,
+             k_slot_idx_py,
+             sint_global_counts[k_slot_idx_py].reveal(),
+             sint_meets_threshold_flags[k_slot_idx_py].reveal())
+
+print_ln("--- MPC Iteration Complete ---")
