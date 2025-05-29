@@ -1,4 +1,5 @@
 # generate_mempool.py
+# usage: python3 generate_mempool.py TRANSACTION_SPACE_BITS MEMPOOL_SIZE
 import sys
 import random
 import json

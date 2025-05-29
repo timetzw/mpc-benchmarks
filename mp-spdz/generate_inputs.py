@@ -1,15 +1,13 @@
 # generate_inputs.py
+# usage: python3 generate_inputs.py NUM_PARTIES VOTES_PER_PARTY
+# Output: Player-Data/Input-P<X>-1 files, one per party, each containing a sorted list of binary strings.
+
 # This script generates input files for MP-SPDZ.
 # Each party randomly selects transactions (as binary strings) from the mempool.
 # The selected BINARY STRINGS themselves are written to the party's input file,
 # one binary string per line, in sorted order.
 #
-# !!! IMPORTANT !!!
-# This output format (files containing binary strings like "010", "111")
-# is NOT directly compatible with MP-SPDZ's standard `sint.get_input_from()`
-# if that function is expected to read integers or individual bits for secret sharing.
-# You will need a custom mechanism in your .mpc script to read and process these strings.
-#
+
 
 import sys
 import random
@@ -101,7 +99,6 @@ def main():
 
     print("Input generation complete for all parties.")
     print("IMPORTANT: The generated Input-P<X>-1 files now contain one *sorted* binary string per line.")
-    print("Your MP-SPDZ script's input phase must be adapted to handle this format (reading strings).")
 
 if __name__ == "__main__":
     main()

@@ -313,9 +313,7 @@ def main():
         # *** CHOOSE THE CORRECT MP-SPDZ PARTY EXECUTABLE HERE ***
         # This should match the protocol your .mpc script is compiled for/expects.
         # Examples: "shamir-party.x", "replicated-ring-party.x", "semi2k-party.x", "mascot-party.x"
-        # Your Dockerfile builds several of these. 'shamir-party.x' is a common default.
-        chosen_mpc_party_executable = "shamir-party.x" # <--- User should verify/change this if needed
-
+        chosen_mpc_party_executable = "shamir-party.x" 
         mpc_output_log = execute_mpc_computation(
             num_parties=NUM_PARTIES,
             compiled_mpc_program_base=COMPILED_MPC_PROGRAM_BASE,
