@@ -1,0 +1,73 @@
+# anonymous_inclusion_iterative.mpc
+import os
+
+# --- Configuration (at COMPILE TIME) ---
+# This section defines the maximum possible size for arrays, which is good for
+# stable memory allocation. The actual number of items processed at runtime
+# will be smaller.
+
+def get_env_int(var_name, default_val_str, must_be_positive=False):
+    val_str = os.environ.get(var_name, default_val_str)
+    try:
+        val_int = int(val_str)
+        if must_be_positive and val_int <= 0: return int(default_val_str)
+        return val_int
+    except ValueError:
+        return int(default_val_str)
+
+# Get NUM_PARTIES from compiler arguments. This is required.
+# if len(program.args) == 0 or not program.args[0].isdigit() or int(program.args[0]) <= 0:
+#     print("FATAL: NUM_PARTIES must be passed as the first argument to compile.py (e.g., './compile.py my_prog 4')")
+#     exit(1)
+NUM_PARTIES = get_env_int('NUM_PARTIES', '2')
+
+# Get other parameters from ENV to calculate max array size
+MEMPOOL_SIZE_FOR_SLOTS_CALC = get_env_int('MEMPOOL_SIZE', '15')
+BRANCH_FACTOR_LOG2 = get_env_int('BRANCH_FACTOR_LOG2', '1', must_be_positive=True)
+
+# Calculate MAX_PREFIX_SLOTS for array allocation.
+MAX_PREFIX_SLOTS = 1 if MEMPOOL_SIZE_FOR_SLOTS_CALC <= 0 else max(1, MEMPOOL_SIZE_FOR_SLOTS_CALC * (2**BRANCH_FACTOR_LOG2))
+
+print(f"[MPC COMPILE CONFIG] NUM_PARTIES: {NUM_PARTIES}")
+print(f"[MPC COMPILE CONFIG] MAX_PREFIX_SLOTS (array capacity): {MAX_PREFIX_SLOTS}")
+
+
+# --- MPC Runtime Logic ---
+
+print_ln("--- MPC Anonymous Inclusion: Secure Summation (Runtime) ---")
+
+# 1. Read the number of active prefixes as a public value from Party 0's input.
+sint_num_active_prefixes = sint.get_input_from(0)
+
+# Other parties must also read from their input to advance the tape,
+# but their values are dummies and can be discarded.
+for i in range(1, NUM_PARTIES):
+    _ = sint.get_input_from(i)
+
+# Reveal the value from Party 0 to use it as a classical integer (cint) for the loop range.
+cint_num_active_prefixes = sint_num_active_prefixes.reveal()
+print_ln("RUNTIME_INFO: Processing %s active prefixes for this iteration.", cint_num_active_prefixes)
+
+# 2. Securely aggregate the vote counts from all parties.
+sint_global_counts = sint.Array(MAX_PREFIX_SLOTS)
+sint_global_counts.assign_all(sint(0))
+
+# The loop now iterates exactly `cint_num_active_prefixes` times.
+@for_range(cint_num_active_prefixes)
+def _(k_slot_idx):
+    # For each active slot, read the next secret input from each party and sum them.
+    for p_party_idx in range(NUM_PARTIES):
+        sint_party_k_slot_count = sint.get_input_from(p_party_idx)
+        sint_global_counts[k_slot_idx] += sint_party_k_slot_count
+
+# 3. Reveal the results for the active prefixes.
+print_ln("--- Iteration Results ---")
+
+@for_range(cint_num_active_prefixes)
+def _(k_slot_idx):
+    # The output is simple: the index of the prefix and its total vote count.
+    print_ln("RAW_ITERATION_RESULT: SlotIndex=%s GlobalVotes=%s",
+             k_slot_idx,
+             sint_global_counts[k_slot_idx].reveal())
+
+print_ln("--- MPC Summation Complete ---")
