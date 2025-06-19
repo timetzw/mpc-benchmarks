@@ -81,7 +81,7 @@ RUN ./compile.py Programs/Source/anonymous_inclusion_iterative.mpc ${NUM_PARTIES
 RUN Scripts/setup-ssl.sh ${NUM_PARTIES}
 
 # 5. Execute the entire iterative workflow using the Python orchestrator
-# RUN python3 ./run_iterative_workflow.py
+RUN python3 ./run_iterative_workflow.py
 
 # --- End of setup for Iterative Anonymous Inclusion ---
 

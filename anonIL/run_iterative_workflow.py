@@ -4,6 +4,7 @@ import os
 import json
 import math
 import subprocess
+import time
 
 # --- Compute expected outcome ---
 
@@ -46,7 +47,7 @@ def compute_expected_outcome():
     for tx_id in sorted(vote_counts.keys()):
         votes = vote_counts[tx_id]
         status = "INCLUDED" if votes >= MIN_VOTES_THRESHOLD else "EXCLUDED"
-        print(f"  TX ID {tx_id}: {votes} votes - {status}")
+        # print(f"  TX ID {tx_id}: {votes} votes - {status}")
         
         if votes >= MIN_VOTES_THRESHOLD:
             expected_included_txs.add(tx_id)
@@ -95,7 +96,7 @@ def run_command(command, stage_name):
     
     return proc.stdout
 
-def execute_mpc_computation(num_parties, program_base):
+def execute_mpc_computation(num_parties, program_base, iteration_level):
     """
     Executes the MPC computation by calling the high-level shamir.sh script.
     """
@@ -113,6 +114,17 @@ def execute_mpc_computation(num_parties, program_base):
     print(f"Orchestrator: Running MPC via '{' '.join(cmd)}'")
 
     process = subprocess.run(cmd, capture_output=True, text=True, env=mpc_env, check=False)
+
+    # --- START: Added log saving logic ---
+    log_file_path = f"Logs/mpc_run.log"
+    with open(log_file_path, 'a') as log_file:
+        log_file.write(f"\n===== Iteration Level {iteration_level} =====\n")
+        log_file.write("--- STDOUT from shamir.sh ---\n")
+        log_file.write(process.stdout)
+        log_file.write("\n--- STDERR from shamir.sh ---\n")
+        log_file.write(process.stderr)
+        log_file.write("=" * 30 + "\n")
+    # --- END: Added log saving logic ---
 
     if process.returncode != 0:
         print("CRITICAL: MPC script execution failed!")
@@ -145,7 +157,7 @@ def generate_child_prefixes(parent_info, level, max_bits, bf_log2):
 def main():
     print("--- Orchestrator: Starting Workflow ---")
     os.makedirs("Player-Data", exist_ok=True)
-
+    os.makedirs("Logs", exist_ok=True)
     print("\n--- Stage 0: Initial Data Generation ---")
     run_command(["python3", "generate_mempool.py", str(TRANSACTION_SPACE_BITS), str(MEMPOOL_SIZE)], "Mempool Generation")
     run_command(["python3", "generate_inputs.py", str(NUM_PARTIES), str(VOTES_PER_PARTY)], "Party Votes Generation")
@@ -155,6 +167,7 @@ def main():
     final_tx_ids = set()
     max_level = math.ceil(TRANSACTION_SPACE_BITS / BRANCH_FACTOR_LOG2) if BRANCH_FACTOR_LOG2 > 0 else 0
 
+    start_time = time.monotonic()
     while level <= max_level and passing_prefixes:
         print(f"\n--- Iteration: Processing Level {level} ---")
         
@@ -177,7 +190,7 @@ def main():
             run_command(["python3", "prepare_iteration_inputs.py", str(i), CANDIDATE_PREFIXES_FILE_JSON, 
                         str(TRANSACTION_SPACE_BITS)], f"Input Prep P{i}")
 
-        mpc_log = execute_mpc_computation(NUM_PARTIES, COMPILED_MPC_PROGRAM_BASE)
+        mpc_log = execute_mpc_computation(NUM_PARTIES, COMPILED_MPC_PROGRAM_BASE, level)
 
         print(f"Orchestrator: Parsing MPC output and applying threshold (>{MIN_VOTES_THRESHOLD-1} votes)...")
         new_passing_prefixes = []
@@ -204,6 +217,9 @@ def main():
         passing_prefixes = new_passing_prefixes
         print(f"Level {level}: Found {len(passing_prefixes)} prefixes for next level.")
         level += 1
+
+    end_time = time.monotonic()
+    print(f"MPC Workflow completed in {end_time - start_time:.2f} seconds")
 
     print("\n--- Workflow Complete ---")
     print("Final Anonymous Inclusion List (Unique TX IDs):")
