@@ -1,17 +1,71 @@
-This repository contains Docker containers used for the benchmarks in the [paper](https://eprint.iacr.org/2020/521) about [MP-SPDZ](https://github.com/data61/MP-SPDZ). It is based on work by [Hastings et al.](https://github.com/MPC-SOK/frameworks)
+# MP‑SPDZ Anonymous Inclusion List
 
-### Usage
+This repository packages an **MP‑SPDZ‑based implementation** of the Anonymous Inclusion List (AIL) protocol inside a self‑contained Docker image.  It is adapted from the benchmark suite of the [MP‑SPDZ paper](https://eprint.iacr.org/2020/521) and the framework survey by [Hastings *et al.*](https://github.com/MPC-SOK/frameworks).
 
-First set up Docker by running the following in the sub-directory named after a framework:
+---
 
+## Quick‑Start Usage
+
+```bash
+# 1. Clone/enter the project root then navigate to the MP‑SPDZ folder
+cd anonIL
+
+# 2. Build the image (choose any tag you like)
+docker build -t <name> .
+
+# 3. Run an interactive container
+docker run -it <name>
+
+# 4. Inside the container, execute the orchestrator at any time
+python3 run_iterative_workflow.py
+
+# 5. Examine the raw MPC logs
+cat Logs/mpc_run.log
 ```
-docker build -t <framework> .
+
+> **Tip:** Re‑running `python3 run_iterative_workflow.py` will regenerate input files and start a fresh MPC round without rebuilding the image.
+
+---
+
+## MP‑SPDZ Framework
+
+MP‑SPDZ offers highly‑optimised arithmetic and many protocol variants (SPDZ, SPDZ2k, MASCOT…).
+
+* **Orchestrator.** `run_iterative_workflow.py` generates per‑iteration inputs, invokes `Scripts/shamir.sh`, and parses outputs.
+
+### Design Overview
+
+```text
+┌──────────────┐       generate_mempool.py
+│   mempool    │◀─────────────────────────┐
+└──────────────┘                          │
+                                          │
+Player-Data/Input-P{i}-1   prepare_iteration_inputs.py
+           ▲                             │
+           │                             ▼
+       per‑party votes       Player-Data/Input-P{i}-0
+                                   ▲
+                                   │
+                 run_iterative_workflow.py (this script)
+                                   │
+                                   ▼
+                       Scripts/shamir.sh → MP‑SPDZ runtime
+                                   │
+                                   ▼
+                        Logs/mpc_run.log + stdout
 ```
 
-The setup script will already run the benchmarks. However, traffic control requires extra permissions, so for the benchmarks including WAN setting run the container as follows:
+* **Status.** The orchestrator is parameter‑agnostic (any committee size, tree fan‑out, etc.).  Performance profiling is ongoing.
 
-```
-docker run --cap-add=NET_ADMIN -it <framework>
-```
+---
 
-Then you can run the benchmarking script, by calling `bash run.sh` or `bash run-<protocol>.sh`. The latter is for framework implementing several protocols. See the directory listing for the options. All scripts first run the benchmark twice without network restrictions and then twice in a WAN setting with 100ms RTT and 100 Mbps bandwidth.
+## Container Details
+
+| Component      | Path in image       | Notes                                                 |
+| -------------- | ------------------- | ----------------------------------------------------- |
+| MP‑SPDZ source | `/root/MP-SPDZ`     | Pulled via sub‑module during build.                   |
+| AIL scripts    | `/root/anonIL`      | Contains orchestrator, helpers, and *.mpc* code.      |
+| Logs           | `/root/anonIL/Logs` | `mpc_run.log` accumulates one section per tree level. |
+
+---
+
