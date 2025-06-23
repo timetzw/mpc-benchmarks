@@ -96,7 +96,7 @@ def run_command(command, stage_name):
     
     return proc.stdout
 
-def execute_mpc_computation(num_parties, program_base, iteration_level):
+def execute_mpc_computation(num_parties, program_base, iteration_level, protocol_name):
     """
     Executes the MPC computation by calling the high-level shamir.sh script.
     """
@@ -104,7 +104,7 @@ def execute_mpc_computation(num_parties, program_base, iteration_level):
     mpc_env['PLAYERS'] = str(num_parties)
 
     full_program_name = f"{program_base}-{num_parties}"
-    script_path = "Scripts/shamir.sh"
+    script_path = f"Scripts/{protocol_name}.sh"
     
     if not os.path.exists(script_path):
         print(f"CRITICAL: MPC script '{script_path}' not found.")
@@ -119,18 +119,18 @@ def execute_mpc_computation(num_parties, program_base, iteration_level):
     log_file_path = f"Logs/mpc_run.log"
     with open(log_file_path, 'a') as log_file:
         log_file.write(f"\n===== Iteration Level {iteration_level} =====\n")
-        log_file.write("--- STDOUT from shamir.sh ---\n")
+        log_file.write(f"--- STDOUT from {protocol_name}.sh ---\n")
         log_file.write(process.stdout)
-        log_file.write("\n--- STDERR from shamir.sh ---\n")
+        log_file.write(f"\n--- STDERR from {protocol_name}.sh ---\n")
         log_file.write(process.stderr)
         log_file.write("=" * 30 + "\n")
     # --- END: Added log saving logic ---
 
     if process.returncode != 0:
         print("CRITICAL: MPC script execution failed!")
-        print("--- STDOUT from shamir.sh ---")
+        print(f"--- STDOUT from {protocol_name}.sh ---")
         print(process.stdout)
-        print("--- STDERR from shamir.sh ---")
+        print(f"--- STDERR from {protocol_name}.sh ---")
         print(process.stderr)
         sys.exit(1)
 
@@ -162,6 +162,10 @@ def main():
     run_command(["python3", "generate_mempool.py", str(TRANSACTION_SPACE_BITS), str(MEMPOOL_SIZE)], "Mempool Generation")
     run_command(["python3", "generate_inputs.py", str(NUM_PARTIES), str(VOTES_PER_PARTY)], "Party Votes Generation")
 
+    # Read protocol name from the terminal, so the program should run like: python3 run_iterative_workflow.py protocol_name
+    protocol_name = sys.argv[1]
+    print(f"Orchestrator: Running protocol {protocol_name}")
+
     level = 0
     passing_prefixes = [{'level': 0, 'prefix_len': 0, 'prefix_str': ""}]
     final_tx_ids = set()
@@ -190,7 +194,7 @@ def main():
             run_command(["python3", "prepare_iteration_inputs.py", str(i), CANDIDATE_PREFIXES_FILE_JSON, 
                         str(TRANSACTION_SPACE_BITS)], f"Input Prep P{i}")
 
-        mpc_log = execute_mpc_computation(NUM_PARTIES, COMPILED_MPC_PROGRAM_BASE, level)
+        mpc_log = execute_mpc_computation(NUM_PARTIES, COMPILED_MPC_PROGRAM_BASE, level, protocol_name)
 
         print(f"Orchestrator: Parsing MPC output and applying threshold (>{MIN_VOTES_THRESHOLD-1} votes)...")
         new_passing_prefixes = []

@@ -34,6 +34,7 @@ RUN make -j4 mpir
 RUN echo CXX = clang++ >> CONFIG.mine
 RUN echo USE_NTL = 1 >> CONFIG.mine
 
+RUN make -j4 mascot-party.x
 RUN make -j4 replicated-ring-party.x
 RUN make -j4 shamir-party.x malicious-shamir-party.x semi2k-party.x
 RUN make -j4 chaigear-party.x
@@ -49,19 +50,21 @@ ADD generate_mempool.py ./
 ADD generate_inputs.py ./
 ADD prepare_iteration_inputs.py ./
 ADD run_iterative_workflow.py ./
+ADD parse_log.py ./
 
 RUN chmod +x ./generate_mempool.py \
              ./generate_inputs.py \
              ./prepare_iteration_inputs.py \
-             ./run_iterative_workflow.py
+             ./run_iterative_workflow.py \
+             ./parse_log.py
 
 # 2. Setup Configuration parameters
-ARG NUM_PARTIES_ARG=8
-ARG TRANSACTION_SPACE_BITS_ARG=20
-ARG BRANCH_FACTOR_LOG2_ARG=2
-ARG MIN_VOTES_THRESHOLD_ARG=4
-ARG MEMPOOL_SIZE_ARG=100
-ARG VOTES_PER_PARTY_ARG=10
+ARG NUM_PARTIES_ARG=4
+ARG TRANSACTION_SPACE_BITS_ARG=3
+ARG BRANCH_FACTOR_LOG2_ARG=1
+ARG MIN_VOTES_THRESHOLD_ARG=2
+ARG MEMPOOL_SIZE_ARG=6
+ARG VOTES_PER_PARTY_ARG=2
 
 ENV NUM_PARTIES=${NUM_PARTIES_ARG}
 ENV TRANSACTION_SPACE_BITS=${TRANSACTION_SPACE_BITS_ARG}
@@ -70,6 +73,7 @@ ENV MIN_VOTES_THRESHOLD=${MIN_VOTES_THRESHOLD_ARG}
 ENV MEMPOOL_SIZE=${MEMPOOL_SIZE_ARG}
 ENV VOTES_PER_PARTY=${VOTES_PER_PARTY_ARG}
 ENV MAX_PREFIX_SLOTS=${MEMPOOL_SIZE_ARG}
+ENV PLAYERS=${NUM_PARTIES}
 
 # 3. Compile the MPC script (once)
 # The .mpc script now reads all its config from ENV variables.
@@ -81,7 +85,7 @@ RUN ./compile.py Programs/Source/anonymous_inclusion_iterative.mpc ${NUM_PARTIES
 RUN Scripts/setup-ssl.sh ${NUM_PARTIES}
 
 # 5. Execute the entire iterative workflow using the Python orchestrator
-RUN python3 ./run_iterative_workflow.py
+RUN python3 ./run_iterative_workflow.py shamir
 
 # --- End of setup for Iterative Anonymous Inclusion ---
 
