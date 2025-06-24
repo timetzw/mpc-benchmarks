@@ -117,7 +117,7 @@ def execute_mpc_computation(num_parties, program_base, iteration_level, protocol
 
     # --- START: Added log saving logic ---
     log_file_path = f"Logs/mpc_run.log"
-    with open(log_file_path, 'a') as log_file:
+    with open(log_file_path, 'w') as log_file:
         log_file.write(f"\n===== Iteration Level {iteration_level} =====\n")
         log_file.write(f"--- STDOUT from {protocol_name}.sh ---\n")
         log_file.write(process.stdout)
