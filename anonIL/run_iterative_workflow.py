@@ -111,13 +111,14 @@ def execute_mpc_computation(num_parties, program_base, iteration_level, protocol
         sys.exit(1)
 
     cmd = [script_path, full_program_name]
+    print(f"Orchestrator: Current cmd: {cmd}")
     print(f"Orchestrator: Running MPC via '{' '.join(cmd)}'")
 
     process = subprocess.run(cmd, capture_output=True, text=True, env=mpc_env, check=False)
 
     # --- START: Added log saving logic ---
     log_file_path = f"Logs/mpc_run.log"
-    with open(log_file_path, 'w') as log_file:
+    with open(log_file_path, 'a') as log_file:
         log_file.write(f"\n===== Iteration Level {iteration_level} =====\n")
         log_file.write(f"--- STDOUT from {protocol_name}.sh ---\n")
         log_file.write(process.stdout)
@@ -161,7 +162,9 @@ def main():
     print("\n--- Stage 0: Initial Data Generation ---")
     run_command(["python3", "generate_mempool.py", str(TRANSACTION_SPACE_BITS), str(MEMPOOL_SIZE)], "Mempool Generation")
     run_command(["python3", "generate_inputs.py", str(NUM_PARTIES), str(VOTES_PER_PARTY)], "Party Votes Generation")
-
+    # Remove the log file
+    if os.path.exists(f"Logs/mpc_run.log"):
+        os.remove(f"Logs/mpc_run.log")
     # Read protocol name from the terminal, so the program should run like: python3 run_iterative_workflow.py protocol_name
     protocol_name = sys.argv[1]
     print(f"Orchestrator: Running protocol {protocol_name}")
@@ -193,6 +196,8 @@ def main():
         for i in range(NUM_PARTIES):
             run_command(["python3", "prepare_iteration_inputs.py", str(i), CANDIDATE_PREFIXES_FILE_JSON, 
                         str(TRANSACTION_SPACE_BITS)], f"Input Prep P{i}")
+
+
 
         mpc_log = execute_mpc_computation(NUM_PARTIES, COMPILED_MPC_PROGRAM_BASE, level, protocol_name)
 
