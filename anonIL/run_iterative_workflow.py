@@ -97,46 +97,108 @@ def run_command(command, stage_name):
     return proc.stdout
 
 def execute_mpc_computation(num_parties, program_base, iteration_level, protocol_name):
-    """
-    Executes the MPC computation by calling the high-level shamir.sh script.
-    """
-    mpc_env = os.environ.copy()
-    mpc_env['PLAYERS'] = str(num_parties)
 
     full_program_name = f"{program_base}-{num_parties}"
-    script_path = f"Scripts/{protocol_name}.sh"
+    executable_path = f'./{protocol_name}-party.x'
     
-    if not os.path.exists(script_path):
-        print(f"CRITICAL: MPC script '{script_path}' not found.")
+    if not os.path.exists(executable_path):
+        print(f"CRITICAL: MPC executable '{executable_path}' not found.")
         sys.exit(1)
 
-    cmd = [script_path, full_program_name]
-    print(f"Orchestrator: Current cmd: {cmd}")
-    print(f"Orchestrator: Running MPC via '{' '.join(cmd)}'")
+    # -N: total number of parties
+    # -F: use file-based preprocessing (online-only)
+    # -v: verbose timing output
+    common_args = [
+        '-N', str(num_parties),
+        '-F',
+        '-v'
+    ]
+    
+    processes = []
+    print(f"Orchestrator: Launching {num_parties} parties for '{protocol_name}'...")
 
-    process = subprocess.run(cmd, capture_output=True, text=True, env=mpc_env, check=False)
+    for i in range(num_parties):
+        party_cmd = [executable_path] + common_args + [str(i), full_program_name]
+        
+        print(f"  - Party {i} CMD: {' '.join(party_cmd)}")
+        
+        # Launch the process in the background, capturing its output
+        proc = subprocess.Popen(party_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        processes.append(proc)
+        
+    # Wait for all processes to finish and collect their output
+    full_stdout = ""
+    full_stderr = ""
+    for i, proc in enumerate(processes):
+        stdout, stderr = proc.communicate()
+        full_stdout += f"--- Party {i} STDOUT ---\n{stdout}\n"
+        if stderr:
+            full_stderr += f"--- Party {i} STDERR ---\n{stderr}\n"
 
-    # --- START: Added log saving logic ---
+    # --- START: Log saving logic ---
     log_file_path = f"Logs/mpc_run.log"
     with open(log_file_path, 'a') as log_file:
         log_file.write(f"\n===== Iteration Level {iteration_level} =====\n")
-        log_file.write(f"--- STDOUT from {protocol_name}.sh ---\n")
-        log_file.write(process.stdout)
-        log_file.write(f"\n--- STDERR from {protocol_name}.sh ---\n")
-        log_file.write(process.stderr)
+        log_file.write(full_stdout)
+        if full_stderr:
+            log_file.write("\n--- COMBINED STDERR ---\n")
+            log_file.write(full_stderr)
         log_file.write("=" * 30 + "\n")
-    # --- END: Added log saving logic ---
+    # --- END: Log saving logic ---
 
-    if process.returncode != 0:
-        print("CRITICAL: MPC script execution failed!")
-        print(f"--- STDOUT from {protocol_name}.sh ---")
-        print(process.stdout)
-        print(f"--- STDERR from {protocol_name}.sh ---")
-        print(process.stderr)
-        sys.exit(1)
+    # Check if any process failed
+    for i, proc in enumerate(processes):
+        if proc.returncode != 0:
+            print(f"CRITICAL: MPC execution failed for party {i} (exit code {proc.returncode})!")
+            print(full_stdout)
+            if full_stderr:
+                print(full_stderr)
+            sys.exit(1)
 
-    # SUCCESS: Return the captured standard output, which contains the MPC results.
-    return process.stdout
+    # Return the combined standard output, which contains the MPC results
+    return full_stdout
+
+# def execute_mpc_computation(num_parties, program_base, iteration_level, protocol_name):
+#     """
+#     Executes the MPC computation by calling the high-level shamir.sh script.
+#     """
+#     mpc_env = os.environ.copy()
+#     mpc_env['PLAYERS'] = str(num_parties)
+
+#     full_program_name = f"{program_base}-{num_parties}"
+#     script_path = f"Scripts/{protocol_name}.sh"
+    
+#     if not os.path.exists(script_path):
+#         print(f"CRITICAL: MPC script '{script_path}' not found.")
+#         sys.exit(1)
+
+#     cmd = [script_path, '-F', '-v', full_program_name]
+#     print(f"Orchestrator: Current cmd: {cmd}")
+#     print(f"Orchestrator: Running MPC via '{' '.join(cmd)}'")
+
+#     process = subprocess.run(cmd, capture_output=True, text=True, env=mpc_env, check=False)
+
+#     # --- START: Added log saving logic ---
+#     log_file_path = f"Logs/mpc_run.log"
+#     with open(log_file_path, 'a') as log_file:
+#         log_file.write(f"\n===== Iteration Level {iteration_level} =====\n")
+#         log_file.write(f"--- STDOUT from {protocol_name}.sh ---\n")
+#         log_file.write(process.stdout)
+#         log_file.write(f"\n--- STDERR from {protocol_name}.sh ---\n")
+#         log_file.write(process.stderr)
+#         log_file.write("=" * 30 + "\n")
+#     # --- END: Added log saving logic ---
+
+#     if process.returncode != 0:
+#         print("CRITICAL: MPC script execution failed!")
+#         print(f"--- STDOUT from {protocol_name}.sh ---")
+#         print(process.stdout)
+#         print(f"--- STDERR from {protocol_name}.sh ---")
+#         print(process.stderr)
+#         sys.exit(1)
+
+#     # SUCCESS: Return the captured standard output, which contains the MPC results.
+#     return process.stdout
 
 def generate_child_prefixes(parent_info, level, max_bits, bf_log2):
     """Generates all child prefixes for a given parent."""

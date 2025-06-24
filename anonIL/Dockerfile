@@ -30,15 +30,22 @@ RUN git config --global url."https://github.com/".insteadOf git://github.com/
 RUN git submodule update --init mpir
 RUN make -j4 mpir
 
+
 # ==== Configure MP-SPDZ ====
+ARG NUM_PARTIES_ARG=4
+
+RUN echo MY_CFLAGS += -DINSECURE >> CONFIG.mine
 RUN echo CXX = clang++ >> CONFIG.mine
 RUN echo USE_NTL = 1 >> CONFIG.mine
 
-RUN make -j4 mascot-party.x
-RUN make -j4 replicated-ring-party.x
-RUN make -j4 shamir-party.x malicious-shamir-party.x semi2k-party.x
-RUN make -j4 chaigear-party.x
-RUN echo MY_CFLAGS += -DFIXED_REGISTERS=1 >> CONFIG.mine
+RUN make clean
+RUN make -j4 Fake-Offline.x mascot-party.x shamir-party.x malicious-shamir-party.x semi2k-party.x
+RUN Scripts/setup-online.sh ${NUM_PARTIES_ARG}
+# RUN make -j4 mascot-party.x
+# RUN make -j4 replicated-ring-party.x
+# RUN make -j4 shamir-party.x malicious-shamir-party.x semi2k-party.x
+# RUN make -j4 chaigear-party.x
+# RUN echo MY_CFLAGS += -DFIXED_REGISTERS=1 >> CONFIG.mine
 # RUN make -j4 yao-party.x
 
 
@@ -59,7 +66,7 @@ RUN chmod +x ./generate_mempool.py \
              ./parse_log.py
 
 # 2. Setup Configuration parameters
-ARG NUM_PARTIES_ARG=4
+
 ARG TRANSACTION_SPACE_BITS_ARG=3
 ARG BRANCH_FACTOR_LOG2_ARG=1
 ARG MIN_VOTES_THRESHOLD_ARG=2
@@ -85,7 +92,7 @@ RUN ./compile.py Programs/Source/anonymous_inclusion_iterative.mpc ${NUM_PARTIES
 RUN Scripts/setup-ssl.sh ${NUM_PARTIES}
 
 # 5. Execute the entire iterative workflow using the Python orchestrator
-RUN python3 ./run_iterative_workflow.py shamir
+# RUN python3 ./run_iterative_workflow.py shamir
 
 # --- End of setup for Iterative Anonymous Inclusion ---
 
